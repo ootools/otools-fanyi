@@ -147,14 +147,138 @@
     <header class="app-header">
       <div class="brand">
         <h1>🌐 翻译集合</h1>
-        <span class="brand-sub">9 个在线翻译站 · Tabs 切换</span>
+        <span class="brand-sub">Spike · 宿主内嵌与浏览器跳转验证（Task 2）</span>
       </div>
+      <button id="btn-test-open" type="button" class="btn-test">测试系统浏览器打开</button>
     </header>
 
-    <main class="placeholder">
-      <p class="placeholder-title">翻译集合 · spike 前置占位</p>
-      <p class="placeholder-tip">宿主内嵌与浏览器跳转 spike（Task 2）完成后，此处替换为 Tabs + iframe 主界面。</p>
+    <div id="spike-status" class="spike-status">
+      尚未探测。点击「测试系统浏览器打开」探测宿主能力并拉起 https://example.com。
+    </div>
+
+    <main class="spike-grid">
+      <section class="spike-panel">
+        <div class="spike-panel-head">
+          <strong>百度翻译</strong>
+          <span>https://fanyi.baidu.com · 302 链路曾有 deny：观察最终页是否渲染、可输入翻译、有无验证码死循环</span>
+        </div>
+        <iframe src="https://fanyi.baidu.com" title="百度翻译（spike 左列）"></iframe>
+      </section>
+      <section class="spike-panel">
+        <div class="spike-panel-head">
+          <strong>必应翻译</strong>
+          <span>https://cn.bing.com/translator · 最干净 200：观察是否渲染且可交互</span>
+        </div>
+        <iframe src="https://cn.bing.com/translator" title="必应翻译（spike 右列）"></iframe>
+      </section>
     </main>
   </div>
+
+  <script type="module">
+    import { pickOpenStrategy } from './js/core/host.js';
+
+    var OPEN_URL = 'https://example.com';
+    var statusEl = document.getElementById('spike-status');
+    var btn = document.getElementById('btn-test-open');
+
+    // 与 head 桥 IIFE 的 tauriInvoke 同款探测：window → parent → top 逐层找 __TAURI_INTERNALS__.invoke。
+    function findTauriInvoke() {
+      var candidates = [window];
+      try { if (window.parent && window.parent !== window) candidates.push(window.parent); } catch (e) {}
+      try { if (window.top && window.top !== window) candidates.push(window.top); } catch (e) {}
+      for (var i = 0; i < candidates.length; i++) {
+        var t = candidates[i] && candidates[i].__TAURI_INTERNALS__;
+        if (t && typeof t.invoke === 'function') return t.invoke.bind(t);
+      }
+      return null;
+    }
+
+    function detectFlags() {
+      return {
+        hasSdkShell: !!(window.otools && window.otools.shell && typeof window.otools.shell.openExternal === 'function'),
+        hasSdkFlat: !!(window.otools && typeof window.otools.shellOpenExternal === 'function'),
+        hasTauriInvoke: !!findTauriInvoke(),
+      };
+    }
+
+    function flagsText(flags) {
+      var bridgeAvail = 'n/a';
+      try {
+        if (window.otoolsPlugin && typeof window.otoolsPlugin.available === 'function') {
+          bridgeAvail = String(window.otoolsPlugin.available());
+        }
+      } catch (e) {}
+      return 'shell=' + (flags.hasSdkShell ? '✓' : '✗')
+        + ' flat=' + (flags.hasSdkFlat ? '✓' : '✗')
+        + ' tauri=' + (flags.hasTauriInvoke ? '✓' : '✗')
+        + ' 桥available=' + bridgeAvail;
+    }
+
+    // 按 pickOpenStrategy 结果排出实际尝试的级别序列（失败逐级降级）。
+    function buildLevels(strategy, flags) {
+      var levels = [];
+      if (strategy === 'sdk') {
+        if (flags.hasSdkShell) {
+          levels.push({ name: 'sdk-shell', run: function () { return window.otools.shell.openExternal(OPEN_URL); } });
+        }
+        if (flags.hasSdkFlat) {
+          levels.push({ name: 'sdk-flat', run: function () { return window.otools.shellOpenExternal(OPEN_URL); } });
+        }
+      }
+      if (strategy === 'sdk' || strategy === 'tauri') {
+        var invoke = findTauriInvoke();
+        if (invoke) {
+          levels.push({ name: 'tauri', run: function () { return invoke('otools_shell_open_external', { url: OPEN_URL }); } });
+        }
+      }
+      levels.push({
+        name: 'window',
+        run: function () {
+          var w = window.open(OPEN_URL, '_blank');
+          if (!w) throw new Error('返回 null（可能被拦截）');
+        },
+      });
+      return levels;
+    }
+
+    function render(text, cls) {
+      statusEl.textContent = text;
+      statusEl.className = 'spike-status' + (cls ? ' ' + cls : '');
+    }
+
+    btn.addEventListener('click', function () {
+      btn.disabled = true;
+      var flags = detectFlags();
+      var strategy = pickOpenStrategy(flags);
+      render('探测中… 命中策略=' + strategy + '（' + flagsText(flags) + '）');
+      var trace = [];
+      var levels = buildLevels(strategy, flags);
+      var settled = false;
+      var chain = Promise.resolve();
+      levels.forEach(function (lvl) {
+        chain = chain.then(function () {
+          if (settled) return null;
+          return Promise.resolve()
+            .then(lvl.run)
+            .then(function () {
+              settled = true;
+              trace.push(lvl.name + '成功');
+            })
+            .catch(function (e) {
+              trace.push(lvl.name + '失败' + (e && e.message ? '（' + e.message + '）' : ''));
+            });
+        });
+      });
+      chain.then(function () {
+        var head = '策略=' + strategy + '（' + flagsText(flags) + '）· ';
+        if (settled) {
+          render(head + '轨迹：' + trace.join('→'), 'ok');
+        } else {
+          render(head + '轨迹：' + trace.join('→') + ' —— 全部失败，请手动访问 ' + OPEN_URL, 'fail');
+        }
+        btn.disabled = false;
+      });
+    });
+  </script>
 </body>
 </html>
