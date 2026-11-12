@@ -9,5 +9,5 @@
  * 推荐用 `node --test tests/` 或直接 `node --test`。
  */
 // Task 3 起逐个追加，例如：
-// import './sites.test.js';
+import './sites.test.js';
 // import './prefill.test.js';
