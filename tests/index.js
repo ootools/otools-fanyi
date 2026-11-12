@@ -13,3 +13,4 @@ import './sites.test.js';
 import './prefill.test.js';
 import './config-store.test.js';
 import './tab-manager.test.js';
+import './host.test.js';
