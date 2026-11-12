@@ -1,0 +1,20 @@
+{
+  "uuid": "otools-fanyi",
+  "packid": "otools-fanyi",
+  "displayName": "Fanyi",
+  "displayNameCN": "翻译集合",
+  "developerName": "OTools",
+  "summary": "在线网页翻译集合：百度/腾讯/有道/搜狗/DeepL/必应/彩云/CNKI/Google 标签页即点即用，一次输入多站预填复用。",
+  "version": "0.1.0",
+  "entry": "dist/index.html",
+  "devUrl": "http://127.0.0.1:6547",
+  "quickDev": true,
+  "hasAd": false,
+  "inPluginPurchase": false,
+  "openMode": "panel",
+  "openInBrowser": false,
+  "logo": "logo.svg",
+  "icon": "🌐",
+  "screenshots": [],
+  "key": ["翻译", "翻译集合", "fanyi", "translate", "translator", "百度翻译", "有道翻译", "搜狗翻译", "DeepL", "谷歌翻译", "学术翻译"]
+}

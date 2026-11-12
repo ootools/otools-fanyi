@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>翻译集合 · OTools</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='24' font-size='24'%3E%F0%9F%8C%90%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script>
+    /*
+     * OTools 宿主桥（沿用 snake 模板契约，按需适配）。
+     * ------------------------------------------------------------------
+     * 宿主注入了两条能力通道，任一条通就算「在 OTools 里」：
+     *   1. `window.otools` / `window.utools`：宿主包装 API。
+     *   2. `window.__TAURI_INTERNALS__.invoke`：Tauri 原生 IPC（tools_webview_* 命令）。
+     * 两条都不通（把 dist 拖进普通浏览器）就退回浏览器原生行为。
+     *
+     * 翻译集合不需要宿主文件 I/O（站点开关配置存 localStorage），这里保留完整的桥
+     * 契约（openText/saveText 等方法原样保留），本插件用到：
+     *   - available()：判断是否在宿主 webview 里（决定 DeepL/Google 特殊站的跳转方式与提示文案）。
+     *   - theme()/language()：宿主主题与语言（本插件固定深色中文 UI）。
+     *   - 系统浏览器打开（Task 2 spike 落地）：三级 openExternal 链
+     *     window.otools?.shell?.openExternal → window.otools?.shellOpenExternal
+     *     → __TAURI_INTERNALS__.invoke('otools_shell_open_external') → window.open 兜底。
+     */
+    (function () {
+      function base64ToBytes(b64) {
+        var bin = atob(b64);
+        var bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return bytes;
+      }
+      function bytesToBase64(bytes) {
+        var bin = '';
+        for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        return btoa(bin);
+      }
+      function baseName(p) {
+        var s = String(p || '');
+        var i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+        return i >= 0 ? s.slice(i + 1) : s;
+      }
+
+      function wrapper() {
+        var a = (typeof window !== 'undefined' && (window.otools || window.utools)) || null;
+        return a && a.dialog && typeof a.dialog.open === 'function' && typeof a.readHostFile === 'function' ? a : null;
+      }
+      function tauriInvoke() {
+        var candidates = [window];
+        try { if (window.parent && window.parent !== window) candidates.push(window.parent); } catch (e) {}
+        try { if (window.top && window.top !== window) candidates.push(window.top); } catch (e) {}
+        for (var i = 0; i < candidates.length; i++) {
+          var t = candidates[i] && candidates[i].__TAURI_INTERNALS__;
+          if (t && typeof t.invoke === 'function') return t.invoke.bind(t);
+        }
+        return null;
+      }
+      function hostReady() { return !!wrapper() || !!tauriInvoke(); }
+      function fail(msg) { return Promise.reject(new Error(msg)); }
+
+      function readHostFile(path) {
+        var a = wrapper();
+        if (a) return a.readHostFile(path);
+        var invoke = tauriInvoke();
+        if (!invoke) return fail('OTools 宿主不可用');
+        return invoke('tools_webview_read_file', { path: path });
+      }
+      function writeHostFile(path, dataBase64) {
+        var invoke = tauriInvoke();
+        if (invoke) {
+          return invoke('tools_webview_write_file', { request: { path: path, dataBase64: dataBase64 } }).catch(function (e) {
+            var a = wrapper();
+            if (a && typeof a.writeHostFile === 'function') return a.writeHostFile({ path: path, dataBase64: dataBase64 });
+            throw e;
+          });
+        }
+        var a = wrapper();
+        if (a && typeof a.writeHostFile === 'function') return a.writeHostFile({ path: path, dataBase64: dataBase64 });
+        return fail('OTools 宿主不可用');
+      }
+      function pickOpenPath(filters) {
+        var a = wrapper();
+        if (a) return a.dialog.open({ directory: false, multiple: false, title: '打开文件', filters: filters }).then(function (p) {
+          return (p && typeof p === 'string') ? p : (p && p.path ? p.path : null);
+        });
+        var invoke = tauriInvoke();
+        if (!invoke) return fail('OTools 打开文件对话框不可用');
+        return invoke('tools_webview_pick_files', { options: { multiple: false, title: '打开文件', filters: filters } }).then(function (files) {
+          var list = Array.isArray(files) ? files : (files ? [files] : []);
+          var first = list[0];
+          return first ? (typeof first === 'string' ? first : (first.path || null)) : null;
+        });
+      }
+      function pickSavePath(defaultPath) {
+        var a = wrapper();
+        if (a) return a.dialog.save({ title: '保存文件', defaultPath: defaultPath, filters: [{ name: '文本', extensions: ['txt'] }] }).then(function (p) {
+          return (p && typeof p === 'string') ? p : (p && p.path ? p.path : null);
+        });
+        var invoke = tauriInvoke();
+        if (!invoke) return fail('OTools 保存对话框不可用');
+        var sp = String(defaultPath || '').match(/^(.*[\\/])?([^\\/]+)$/);
+        return invoke('tools_webview_pick_save_path', {
+          options: { title: '保存文件', suggestedName: sp ? sp[2] : defaultPath, directory: sp ? sp[1].replace(/[\\/]+$/, '') : undefined, filters: [{ name: '文本', extensions: ['txt'] }] },
+        }).then(function (meta) { return meta ? (typeof meta === 'string' ? meta : (meta.path || null)) : null; });
+      }
+
+      // 暴露给页面其它脚本的统一桥。
+      window.otoolsPlugin = {
+        available: function () { return hostReady(); },
+        theme: function () {
+          var cl = document.documentElement && document.documentElement.classList;
+          if (!cl) return '';
+          if (cl.contains('dark')) return 'dark';
+          if (cl.contains('light')) return 'light';
+          return '';
+        },
+        language: function () {
+          try {
+            return (window.__OTOOLS_LOCALE__ && window.__OTOOLS_LOCALE__.locale) ||
+              (document.documentElement && document.documentElement.lang) ||
+              (typeof navigator !== 'undefined' && navigator.language) || '';
+          } catch (e) { return ''; }
+        },
+        openText: function (filters) {
+          if (!hostReady()) return fail('OTools 打开文件对话框不可用');
+          return pickOpenPath(filters || [{ name: '文本', extensions: ['txt', 'json', 'md'] }]).then(function (path) {
+            if (!path) return null;
+            return readHostFile(path).then(function (file) {
+              var dataBase64 = (file && file.dataBase64) || '';
+              return { name: (file && file.name) || baseName(path), path: path, text: atob(dataBase64) };
+            });
+          });
+        },
+        saveText: function (name, text) {
+          if (!hostReady()) return fail('OTools 保存对话框不可用');
+          return pickSavePath(name).then(function (path) {
+            if (!path) return null;
+            return writeHostFile(path, bytesToBase64(new TextEncoder().encode(text))).then(function () { return path; });
+          });
+        },
+      };
+    })();
+  </script>
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <div class="brand">
+        <h1>🌐 翻译集合</h1>
+        <span class="brand-sub">9 个在线翻译站 · Tabs 切换</span>
+      </div>
+    </header>
+
+    <main class="placeholder">
+      <p class="placeholder-title">翻译集合 · spike 前置占位</p>
+      <p class="placeholder-tip">宿主内嵌与浏览器跳转 spike（Task 2）完成后，此处替换为 Tabs + iframe 主界面。</p>
+    </main>
+  </div>
+</body>
+</html>
