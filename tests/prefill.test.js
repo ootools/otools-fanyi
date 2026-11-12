@@ -80,6 +80,21 @@ test('超长文本：8001 字符截断为前 8000 字符', () => {
   assert.equal(decoded, text.slice(0, 8000));
 });
 
+test('超长文本含增补平面字符：截断按代码点，不抛 URIError', () => {
+  const text = 'a'.repeat(7999) + '😀' + 'b'.repeat(5);
+  const result = buildSiteUrl(site('bing'), text);
+  const prefix = 'https://cn.bing.com/translator?text=';
+  assert.ok(result.startsWith(prefix), '结果应以 bing 模板前缀开头');
+  const decoded = decodeURIComponent(result.slice(prefix.length));
+  assert.equal([...decoded].length, 8000, '解码文本按代码点计恰为 8000');
+  assert.equal(decoded, 'a'.repeat(7999) + '😀', '截断边界处的 😀 保持完整');
+});
+
+test('输入含孤立代理项：兜底替换为 U+FFFD，不抛错', () => {
+  const result = buildSiteUrl(site('bing'), '\uD800abc');
+  assert.equal(result, 'https://cn.bing.com/translator?text=%EF%BF%BDabc');
+});
+
 test('幂等：同一输入两次调用结果相同', () => {
   const text = '幂等 test 123';
   assert.equal(buildSiteUrl(site('baidu'), text), buildSiteUrl(site('baidu'), text));
