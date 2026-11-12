@@ -36,6 +36,16 @@ function enabledMap(overrides = {}) {
   return Object.fromEntries(SITES.map((s) => [s.id, overrides[s.id] ?? true]));
 }
 
+/** 全禁 enabled 映射。 */
+function enabledNone() {
+  return Object.fromEntries(SITES.map((s) => [s.id, false]));
+}
+
+/** 仅启用指定站的 enabled 映射（其余全 false）。 */
+function enabledOnly(id) {
+  return Object.fromEntries(SITES.map((s) => [s.id, s.id === id]));
+}
+
 test('① 首次 select(baidu) → createFrame 调 1 次（懒创建），currentId 为 baidu', () => {
   const { hooks, calls } = makeFakeHooks();
   const tm = new TabManager(SITES, hooks);
@@ -97,7 +107,7 @@ test('⑥ 全部禁用 → onAllDisabled 调 1 次，全部 frame 销毁，curre
   const tm = new TabManager(SITES, hooks);
   tm.select('baidu');
   tm.select('bing');
-  tm.setEnabled(enabledMap(Object.fromEntries(SITES.map((s) => [s.id, false]))));
+  tm.setEnabled(enabledNone());
   assert.equal(calls.allDisabled, 1);
   assert.equal(tm.currentId(), null);
   assert.deepEqual([...calls.destroyed].sort(), ['baidu', 'bing'], '禁用即销毁');
@@ -129,4 +139,60 @@ test('⑧ 重新启用已销毁的站 → 再 select 时重新 createFrame', () 
   );
   assert.equal(els.get('baidu').hidden, false, '重建后可见');
   assert.equal(tm.currentId(), 'baidu');
+});
+
+test('⑨ 全禁 map 重复 setEnabled 三次 → onAllDisabled 恰 1 次（幂等）', () => {
+  const { hooks, calls } = makeFakeHooks();
+  const tm = new TabManager(SITES, hooks);
+  tm.select('baidu');
+  tm.setEnabled(enabledNone());
+  tm.setEnabled(enabledNone());
+  tm.setEnabled(enabledNone());
+  assert.equal(calls.allDisabled, 1, '全禁状态下重复 setEnabled 不得重复回调');
+  assert.equal(tm.currentId(), null);
+});
+
+test('⑩ 启动即全禁仍触发 1 次；恢复一站启用 → currentId 落到该站；再次全禁 → 共 2 次', () => {
+  const { hooks, calls, els } = makeFakeHooks();
+  const tm = new TabManager(SITES, hooks);
+  tm.setEnabled(enabledNone());
+  assert.equal(calls.allDisabled, 1, '启动即全禁（首次进入）必须触发');
+  tm.setEnabled(enabledOnly('caiyun'));
+  assert.equal(tm.currentId(), 'caiyun', '退出全禁自动切到唯一启用站');
+  assert.deepEqual(calls.create, ['caiyun'], '按 select 语义懒创建');
+  assert.equal(els.get('caiyun').hidden, false);
+  tm.setEnabled(enabledNone());
+  assert.equal(calls.allDisabled, 2, '再次进入全禁须重新触发');
+  assert.equal(tm.currentId(), null);
+});
+
+test('⑪ hooks 无 createFrame → select 不抛错、currentId 不切换、后续 select（含 hideAll）不抛', () => {
+  let browserCalls = 0;
+  const tm = new TabManager(SITES, {
+    onBrowserSite() {
+      browserCalls += 1;
+    },
+    onAllDisabled() {},
+  });
+  tm.select('baidu'); // 缺 createFrame：防御分支
+  assert.equal(tm.currentId(), null, '帧创建失败不得切换 currentId');
+  tm.select('bing'); // #hideAll 空帧表不得抛
+  assert.equal(tm.currentId(), null);
+  tm.select('deepl'); // browser 站不受影响
+  assert.equal(browserCalls, 1);
+  assert.equal(tm.currentId(), 'deepl');
+});
+
+test('⑫ createFrame 返回 undefined → 同样安全降级（不进帧表、不切换、hideAll 不抛）', () => {
+  const tm = new TabManager(SITES, {
+    createFrame() {
+      return undefined;
+    },
+    onBrowserSite() {},
+    onAllDisabled() {},
+  });
+  tm.select('baidu');
+  assert.equal(tm.currentId(), null);
+  tm.select('sogou'); // #hideAll 空帧表不得抛
+  assert.equal(tm.currentId(), null);
 });

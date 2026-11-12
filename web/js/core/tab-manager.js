@@ -10,6 +10,9 @@
  *   自动落到 SITES 顺序里剩余启用站的首个（按 select 语义懒创建）。
  *
  * hooks = { createFrame(site) → { el, destroy() }, onBrowserSite(site), onAllDisabled() }。
+ * createFrame 为必需 hook；缺失或返回 falsy 走防御分支（select 安全返回、不进帧表、
+ * 不切换 currentId）。onAllDisabled() 幂等：仅在真正进入「无可启用站」状态时触发
+ * 一次，任一站恢复启用后再次全禁会重新触发（含启动即全禁的首次进入）。
  * el 隐藏约定：优先调 el.setHidden(bool)（测试假件 / 包装层提供的可断言接口），
  * 普通对象（如真 DOM el）回退写 el.hidden 属性。
  */
@@ -28,6 +31,8 @@ export class TabManager {
   #frames = new Map();
   /** 严格 === false 视为关闭（与 config-store 合并规则一致），其余一律开启。 */
   #disabledIds = new Set();
+  /** 已进入全禁状态并回调过 onAllDisabled 的标志（幂等；恢复启用即复位）。 */
+  #allDisabledNotified = false;
   #current = null;
 
   constructor(sites, hooks) {
@@ -45,8 +50,8 @@ export class TabManager {
   select(id) {
     const site = this.#siteById.get(id);
     if (!site || this.#disabledIds.has(id)) return;
-    this.#hideAll();
     if (site.type === 'browser') {
+      this.#hideAll();
       this.#current = id;
       this.#hooks.onBrowserSite?.(site);
       return;
@@ -54,8 +59,11 @@ export class TabManager {
     let frame = this.#frames.get(id);
     if (!frame) {
       frame = this.#hooks.createFrame?.(site);
+      // 防御：createFrame 为必需 hook，缺失或返回 falsy 时不进帧表、不隐藏现有帧、不切换。
+      if (!frame) return;
       this.#frames.set(id, frame);
     }
+    this.#hideAll();
     setElHidden(frame.el, false);
     this.#current = id;
   }
@@ -63,10 +71,12 @@ export class TabManager {
   /**
    * 更新站点开关（合并语义：只覆盖传入的 id；值严格 === false 视为关闭）。
    * 被禁用的站立即销毁 frame；当前站被禁用时自动切到 SITES 顺序里剩余启用
-   * 站的首个；无可启用站则 currentId 归 null 并回调 onAllDisabled()。
+   * 站的首个，从全禁状态恢复启用亦然；无可启用站则 currentId 归 null 并
+   * 触发 onAllDisabled()——仅真正进入全禁状态时触发一次（幂等）。
    */
   setEnabled(enabled) {
     const prev = this.#current;
+    const wasAllDisabled = this.#allDisabledNotified;
     for (const [id, value] of Object.entries(enabled ?? {})) {
       if (value === false) this.#disabledIds.add(id);
       else this.#disabledIds.delete(id);
@@ -78,10 +88,16 @@ export class TabManager {
     if (!next) {
       this.#hideAll();
       this.#current = null;
-      this.#hooks.onAllDisabled?.();
+      if (!wasAllDisabled) {
+        this.#allDisabledNotified = true;
+        this.#hooks.onAllDisabled?.();
+      }
       return;
     }
-    if (prev !== null && this.#disabledIds.has(prev)) this.select(next.id);
+    this.#allDisabledNotified = false;
+    if ((prev !== null && this.#disabledIds.has(prev)) || (prev === null && wasAllDisabled)) {
+      this.select(next.id);
+    }
   }
 
   /** 内部：隐藏全部存活帧（切走 / browser 站 / 全禁用时）。 */
