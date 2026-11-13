@@ -4,7 +4,7 @@
   "displayName": "Fanyi",
   "displayNameCN": "翻译集合",
   "developerName": "OTools",
-  "summary": "在线网页翻译集合：百度/腾讯/有道/搜狗/DeepL/必应/彩云/CNKI/Google 标签页即点即用，一次输入多站预填复用。",
+  "summary": "九大在线翻译入口：顶部标签切换、站点开关配置；百度/搜狗/必应支持预填，其他站提供手动粘贴及浏览器兜底。",
   "version": "0.1.0",
   "entry": "dist/index.html",
   "devUrl": "http://127.0.0.1:6547",
