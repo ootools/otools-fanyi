@@ -21,7 +21,21 @@ import { loadConfig, saveConfig, resetConfig } from '../core/config-store.js';
 import { TabManager } from '../core/tab-manager.js';
 import { createHostBridge } from '../core/host.js';
 
-const storage = window.localStorage;
+/** 存储 getter 可能抛 SecurityError；此时配置只在本次运行的内存中有效。 */
+function getStorage() {
+  try {
+    const storage = window.localStorage;
+    if (storage) return storage;
+  } catch (e) { /* 隐私模式 / 受限 webview：回退内存，不中断装配 */ }
+  const map = new Map();
+  return {
+    getItem: (key) => (map.has(key) ? map.get(key) : null),
+    setItem: (key, value) => map.set(key, String(value)),
+    removeItem: (key) => map.delete(key),
+  };
+}
+
+const storage = getStorage();
 const host = createHostBridge(window);
 
 /** 记住上次所在站点（独立 key，与 config-store 解耦；读写失败静默忽略）。 */
@@ -59,6 +73,7 @@ const frames = new Map();
 let tabManager = null;
 let enabled = null; // 当前启停表（loadConfig / 管理弹层写回）
 let lastBrowserUrl = ''; // 特殊站卡片上展示 / 复制的预填 URL
+let browserRequestToken = 0; // 单调递增：仅最新 browser 请求可更新卡片
 
 /* ---------------------------------------------------------------- toast */
 
@@ -134,6 +149,7 @@ function sync() {
   const cur = tabManager.currentId();
   if (cur === null) {
     // 全禁用：隐藏卡片（帧已由 TabManager 全部隐藏），展示引导页。
+    browserRequestToken += 1;
     els.card.hidden = true;
     els.guide.hidden = false;
     return;
@@ -141,7 +157,8 @@ function sync() {
   els.guide.hidden = true;
   const site = siteById.get(cur);
   if (site.type === 'embed') {
-    // 当前帧已由 TabManager 显示；特殊站卡片只在 browser 站展示。
+    // 当前帧已由 TabManager 显示；离开 browser 视图即取消过时状态更新。
+    browserRequestToken += 1;
     els.card.hidden = true;
   }
   // browser 站：卡片内容与状态由 onBrowserSite 回调负责，这里不动。
@@ -196,6 +213,7 @@ function createFrame(site) {
 /* --------------------------------------------- 特殊站（browser）卡片流程 */
 
 const STATUS_TEXT = {
+  ready: '点击站点标签、「翻译」或「重试打开」，在系统浏览器中访问。',
   opening: '正在打开系统浏览器…',
   opened: '已在系统浏览器打开 ✓',
   failed: '打开失败：系统浏览器不可用。可复制下方链接，手动粘贴访问。',
@@ -224,10 +242,16 @@ function showCard(site, url, status) {
  */
 function openBrowserSite(site) {
   const url = buildSiteUrl(site, inputText());
+  const token = ++browserRequestToken;
   showCard(site, url, 'opening');
+  const updateStatus = (status) => {
+    if (token === browserRequestToken && tabManager.currentId() === site.id) {
+      setCardStatus(status);
+    }
+  };
   host.openExternal(url)
-    .then(() => setCardStatus('opened'))
-    .catch(() => setCardStatus('failed'));
+    .then(() => updateStatus('opened'))
+    .catch(() => updateStatus('failed'));
 }
 
 /* ------------------------------------------------------------ 翻译 / 复制 */
@@ -240,15 +264,17 @@ function translate() {
     return;
   }
   const site = siteById.get(cur);
+  if (!site.prefill) toast('该站不支持自动预填，请复制文本后粘贴');
   if (site.type === 'browser') {
-    // 空文本 / 无模板时 buildSiteUrl 返回原 URL，openExternal 语义不变。
+    // 空文本 / 无模板时打开原 URL；无模板仍提示复制后粘贴。
     openBrowserSite(site);
     return;
   }
+  if (!site.prefill) return; // 无模板的 embed 站不静默重载
   const frame = frames.get(site.id);
   if (!frame) return; // 防御：帧不存在（不应发生）
-  // 空文本或无预填模板 → buildSiteUrl 给原 URL，等价原样重载；
-  // 有文本有模板 → 仅重载当前站 iframe，其余站保持 keep-alive 不动。
+  // 空文本 → buildSiteUrl 给原 URL，等价原样重载；
+  // 有文本 → 仅重载当前站 iframe，其余站保持 keep-alive 不动。
   frame.iframe.src = buildSiteUrl(site, inputText());
 }
 
@@ -367,9 +393,14 @@ els.cardRetry.addEventListener('click', () => {
 
 /* ------------------------------------------------------------ 启动 */
 
+// 启动恢复只展示卡片和 URL；TabManager 的 browser 选择契约保持不变。
+let suppressOpen = true;
 tabManager = new TabManager(SITES, {
   createFrame,
-  onBrowserSite: openBrowserSite,
+  onBrowserSite: (site) => {
+    if (suppressOpen) showCard(site, buildSiteUrl(site, inputText()), 'ready');
+    else openBrowserSite(site);
+  },
   onAllDisabled: () => sync(),
 });
 
@@ -386,6 +417,7 @@ if (tabManager.currentId() === null) {
   if (first) tabManager.select(first.id);
 }
 if (tabManager.currentId()) rememberSite(tabManager.currentId());
+suppressOpen = false;
 
 fitInput();
 sync();
