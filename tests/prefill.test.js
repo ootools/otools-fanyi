@@ -9,11 +9,29 @@ const site = (id) => {
   return found;
 };
 
-test('hash 模板：baidu / deepl 追加到原 URL 尾部', () => {
+// 协议 fixture 只验证 URL 生成器，不代表任何线上站点支持自动预填。
+const hashFixture = {
+  id: 'hash-fixture',
+  name: 'Hash 协议 fixture',
+  url: 'https://example.test/translator',
+  type: 'browser',
+  prefill: '#auto/zh/{text}',
+  note: '仅用于离线 URL 拼接测试',
+};
+const queryFixture = {
+  id: 'query-fixture',
+  name: 'Query 协议 fixture',
+  url: 'https://example.test/translate',
+  type: 'browser',
+  prefill: '?sl=auto&tl=zh-CN&text={text}&op=translate',
+  note: '仅用于离线 URL 拼接测试',
+};
+
+test('hash 模板：baidu 与协议 fixture 追加到原 URL 尾部', () => {
   assert.equal(buildSiteUrl(site('baidu'), 'hi there'), 'https://fanyi.baidu.com#auto/zh/hi%20there');
   assert.equal(
-    buildSiteUrl(site('deepl'), 'hi there'),
-    'https://www.deepl.com/translator#auto/zh/hi%20there',
+    buildSiteUrl(hashFixture, 'hi there'),
+    'https://example.test/translator#auto/zh/hi%20there',
   );
 });
 
@@ -28,11 +46,23 @@ test('sogou 路径式 query 模板整体正确', () => {
   );
 });
 
-test('google 带 sl/tl/op 参数完整', () => {
+test('query 协议 fixture 保留 sl/tl/op 参数', () => {
   assert.equal(
-    buildSiteUrl(site('google'), 'hi there'),
-    'https://translate.google.com?sl=auto&tl=zh-CN&text=hi%20there&op=translate',
+    buildSiteUrl(queryFixture, 'hi there'),
+    'https://example.test/translate?sl=auto&tl=zh-CN&text=hi%20there&op=translate',
   );
+});
+
+test('deepl 未确认预填：输入不附加到访问链接，生产 prefill 为 null', () => {
+  const deepl = site('deepl');
+  assert.equal(buildSiteUrl(deepl, 'Hello world 你好'), 'https://www.deepl.com/translator');
+  assert.equal(deepl.prefill, null);
+});
+
+test('google 未确认预填：输入不附加到访问链接，生产 prefill 为 null', () => {
+  const google = site('google');
+  assert.equal(buildSiteUrl(google, 'Hello world 你好'), 'https://translate.google.com');
+  assert.equal(google.prefill, null);
 });
 
 test('空文本（\'\' 或 null）→ 原样返回 site.url', () => {
@@ -50,22 +80,23 @@ test('site.prefill 为 null → 原样返回 site.url', () => {
 test('特殊字符编码后不含裸 # / & / 空格，且可解码回原文', () => {
   const text = 'a#b&c 中  😀';
   const cases = [
-    { id: 'baidu', before: 'https://fanyi.baidu.com#auto/zh/', after: '' },
-    { id: 'bing', before: 'https://cn.bing.com/translator?text=', after: '' },
+    { target: site('baidu'), before: 'https://fanyi.baidu.com#auto/zh/', after: '' },
+    { target: site('bing'), before: 'https://cn.bing.com/translator?text=', after: '' },
+    { target: hashFixture, before: 'https://example.test/translator#auto/zh/', after: '' },
     {
-      id: 'google',
-      before: 'https://translate.google.com?sl=auto&tl=zh-CN&text=',
+      target: queryFixture,
+      before: 'https://example.test/translate?sl=auto&tl=zh-CN&text=',
       after: '&op=translate',
     },
   ];
-  for (const { id, before, after } of cases) {
-    const result = buildSiteUrl(site(id), text);
-    assert.ok(result.startsWith(before), `${id} 结果应以模板前缀开头`);
+  for (const { target, before, after } of cases) {
+    const result = buildSiteUrl(target, text);
+    assert.ok(result.startsWith(before), `${target.id} 结果应以模板前缀开头`);
     const encoded = after
       ? result.slice(before.length, result.length - after.length)
       : result.slice(before.length);
-    assert.doesNotMatch(encoded, /[#& ]/, `${id} 编码文本不含裸 #/&/空格`);
-    assert.equal(decodeURIComponent(encoded), text, `${id} 编码文本应解码回原文`);
+    assert.doesNotMatch(encoded, /[#& ]/, `${target.id} 编码文本不含裸 #/&/空格`);
+    assert.equal(decodeURIComponent(encoded), text, `${target.id} 编码文本应解码回原文`);
   }
 });
 
