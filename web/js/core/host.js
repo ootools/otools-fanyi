@@ -38,7 +38,8 @@ export function pickOpenStrategy(flags) {
 
 /**
  * window → parent → top 逐层查找 __TAURI_INTERNALS__.invoke（沿用桥脚本探测方式）。
- * 跨域访问 parent/top 属性会抛，逐个 try/catch。
+ * 跨域 WindowProxy 上任何属性读取都会同步抛 SecurityError：压栈与循环内
+ * 属性读取均逐个 try/catch，读不到的候选视为无 tauri、跳过继续，绝不外抛。
  *
  * @param {Window} win
  * @returns {((cmd: string, args: object) => Promise<any>) | null}
@@ -48,7 +49,8 @@ function findTauriInvoke(win) {
   try { if (win.parent && win.parent !== win) candidates.push(win.parent); } catch (e) {}
   try { if (win.top && win.top !== win) candidates.push(win.top); } catch (e) {}
   for (var i = 0; i < candidates.length; i++) {
-    var t = candidates[i] && candidates[i].__TAURI_INTERNALS__;
+    var t = null;
+    try { t = candidates[i] && candidates[i].__TAURI_INTERNALS__; } catch (e) { t = null; }
     if (t && typeof t.invoke === 'function') return t.invoke.bind(t);
   }
   return null;

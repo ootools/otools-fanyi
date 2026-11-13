@@ -236,3 +236,24 @@ test('⑲ 全缺（无 clipboard、无 document）→ false，不同步抛', asy
   const win = makeFakeWin({});
   assert.equal(await createHostBridge(win).copyText('hi'), false);
 });
+
+/* ------------------------------------------------------------------ */
+/* 跨域 WindowProxy：探测候选读属性同步抛，必须逐候选防抛并跳过             */
+/* ------------------------------------------------------------------ */
+
+test('⑳ parent 为跨域 WindowProxy（读属性抛 SecurityError）→ 探测不抛，openExternal 走到 window 级成功', async () => {
+  // 真实跨域 WindowProxy 上读任意自有属性同步抛 SecurityError；用 Proxy 模拟。
+  const crossProxy = new Proxy({}, {
+    get() {
+      throw new Error('SecurityError: Blocked a frame with origin from accessing a cross-origin frame.');
+    },
+  });
+  const opens = [];
+  const win = {};
+  win.parent = crossProxy; // 压栈可行（身份比较不触发 get），循环里读其属性才抛
+  win.open = (url, target) => { opens.push([url, target]); return { closed: false }; };
+  const bridge = createHostBridge(win);
+  assert.equal(bridge.available(), false, '读不到的能力视为不存在，available() 不得同步抛');
+  await bridge.openExternal('https://example.com');
+  assert.deepEqual(opens, [['https://example.com', '_blank']], '跨域候选被跳过后照常走完链到 window 兜底级');
+});
